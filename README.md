@@ -1,6 +1,6 @@
 # stdemojtag
 
-stdemojtag is a JTAG adapter firmware for STM32L476 Discovery cards.
+stdemojtag is a JTAG adapter firmware for STM32L476 Discovery boards.
 
 Hardcoded PINs:
 
