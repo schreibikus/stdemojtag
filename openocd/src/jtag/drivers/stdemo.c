@@ -25,6 +25,7 @@
 
 #include <jtag/interface.h>
 #include <sys/ioctl.h>
+#include <termios.h>
 
 #define STDEMO_IO_TIMEOUT       5000 /* timeout 5s */
 
@@ -382,6 +383,7 @@ static int stdemo_speed_div(int speed, int *khz)
 static int stdemo_init(void)
 {
 	const char *startcmd = "startjtag";
+	struct termios options;
 	char byte = ' ';
 
 	if (stdemo_device == NULL) {
@@ -398,6 +400,22 @@ static int stdemo_init(void)
 	if (stdemo_device_handle < 0) {
 		int err = errno;
 		LOG_ERROR("cannot open device. check it exists and that user read and write rights are set. errno=%d", err);
+		return ERROR_JTAG_INIT_FAILED;
+	}
+
+	fcntl(stdemo_device_handle, F_SETFL, 0 );
+	memset(&options, 0, sizeof(options));
+	cfsetispeed(&options, B115200);
+	cfsetospeed(&options, B115200);
+	options.c_cflag |= (CLOCAL | CREAD);
+	options.c_cflag |= CS8;    // Select 8 data bits
+	options.c_cc[VMIN] = 1;
+	options.c_cc[VTIME] = 0;
+	if(tcsetattr(stdemo_device_handle, TCSANOW, &options) != 0)
+	{
+		LOG_ERROR("cannot init device. check it.");
+		close(stdemo_device_handle);
+		stdemo_device_handle = -1;
 		return ERROR_JTAG_INIT_FAILED;
 	}
 
