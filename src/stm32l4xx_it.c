@@ -1,4 +1,4 @@
-/** 
+/**
   ******************************************************************************
   * @file    GPIO/GPIO_IOToggle/Src/stm32l4xx_it.c
   * @author  MCD Application Team
@@ -39,21 +39,8 @@
 #include "main.h"
 #include "stm32l4xx_it.h"
 
-/** @addtogroup STM32L4xx_HAL_Examples
-  * @{
-  */
-
-/** @addtogroup GPIO_IOToggle
-  * @{
-  */
-
-/* Private typedef -----------------------------------------------------------*/
-/* Private define ------------------------------------------------------------*/
-/* Private macro -------------------------------------------------------------*/
-/* Private variables ---------------------------------------------------------*/
-
-/* Private function prototypes -----------------------------------------------*/
-/* Private functions ---------------------------------------------------------*/
+extern PCD_HandleTypeDef hpcd;
+extern UART_HandleTypeDef uartHandle;
 
 /******************************************************************************/
 /*            Cortex-M4 Processor Exceptions Handlers                         */
@@ -154,6 +141,16 @@ void PendSV_Handler(void)
 /*  available peripheral interrupt handler's name please refer to the startup */
 /*  file (startup_stm32l4xx.s).                                               */
 /******************************************************************************/
+
+void OTG_FS_IRQHandler(void)
+{
+  HAL_PCD_IRQHandler(&hpcd);
+}
+
+void USART2_IRQHandler(void)
+{
+    HAL_UART_IRQHandler(&uartHandle);
+}
 
 /**
   * @brief  This function handles PPP interrupt request.

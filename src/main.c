@@ -40,6 +40,9 @@
 #define SEND_BUFFER_LEN 128
 #define RECV_BUFFER_LEN 128
 
+#define USB_RECV_BUFFER_LEN     10*4096
+#define USB_SEND_BUFFER_LEN     2*4096
+
 #define COMNUM 3 /* Count of commands */
 #define COM_RESET "reset"
 #define COM_STARTJTAG "startjtag"
@@ -96,12 +99,18 @@
 /* Private macro -------------------------------------------------------------*/
 /* Private variables ---------------------------------------------------------*/
 static GPIO_InitTypeDef  GPIO_InitStruct;
+USBD_HandleTypeDef USBD_Device;
 
 static uint8_t recv_buffer[RECV_BUFFER_LEN]; /* Buffer for receiving data */
 static volatile uint8_t recv_addr_start, recv_addr_end; /* Write and Read pointers of circular bufffer */
 static uint8_t send_buffer[SEND_BUFFER_LEN]; /* Buffer for sending data */
 static volatile uint8_t send_addr_start, send_addr_end; /* Write and Read pointers of circular buffer */
 static volatile uint8_t send_running; /* Sending data  */
+
+static uint8_t usb_recv_buffer[USB_RECV_BUFFER_LEN];
+static volatile uint16_t usb_recv_addr_start, usb_recv_addr_end; /* Write and Read pointers of circular bufffer */
+static uint8_t usb_send_buffer[SEND_BUFFER_LEN] __attribute__ ((aligned (4))); /* Buffer for sending data */
+static volatile uint16_t usb_send_addr_start, usb_send_addr_end; /* Write and Read pointers of circular buffer */
 
 static volatile uint32_t time; /* time delay in miliseconds */
 static volatile uint8_t time_delay; /* running time delay */
@@ -115,6 +124,8 @@ static uint8_t in_jtag_state; /* Only work short command and stopjtag command */
 static uint8_t jtag_port_data;
 static uint8_t jtag_port_wait_integer; // size of integger in bytes
 static uint32_t jtag_port_integer; // integer for command
+static int usb_need_receive = 0;
+static int rs232_or_usb = -1; // -1 - autodetect, 0 - rs232, 1 - usb
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -128,7 +139,7 @@ void SystemClock_Config(void);
   * @retval None
   */
 
-static UART_HandleTypeDef uartHandle;
+UART_HandleTypeDef uartHandle;
 
 /**
   * @brief  This function handles SysTick Handler.
@@ -145,11 +156,6 @@ void SysTick_Handler(void)
             time_delay = 0;
     }
     HAL_IncTick();
-}
-
-void USART2_IRQHandler(void)
-{
-    HAL_UART_IRQHandler(&uartHandle);
 }
 
 static void UART_RxISR(UART_HandleTypeDef *huart)
@@ -232,7 +238,7 @@ HAL_StatusTypeDef HAL_UART_Confugure(UART_HandleTypeDef *huart)
 }
 
 /* Get byte from receive buffer */
-static uint8_t recv_char(uint8_t *symb)
+static uint8_t recv_char_uart(uint8_t *symb)
 {
     uint8_t addr;
 
@@ -245,13 +251,113 @@ static uint8_t recv_char(uint8_t *symb)
             recv_addr_start = (~recv_addr_start) & 0x80;
         else
             recv_addr_start ++;
+
         return 1;
     }
+
     return 0;
 }
 
+static uint8_t recv_char_usb(uint8_t *symb)
+{
+    uint16_t usb_addr;
+
+    if(usb_need_receive && (((USBD_CDC_HandleTypeDef*)USBD_Device.pClassData)->TxState == 0))
+    {
+        usb_need_receive = 0;
+        USBD_CDC_ReceivePacket(&USBD_Device);
+    }
+
+    if(usb_recv_addr_start != usb_recv_addr_end)
+    {
+        usb_addr = usb_recv_addr_start & 0x7FFF;
+        *symb = usb_recv_buffer[usb_addr];
+        usb_addr++;
+        if (usb_addr == USB_RECV_BUFFER_LEN)
+            usb_recv_addr_start = (~usb_recv_addr_start) & 0x8000;
+        else
+            usb_recv_addr_start ++;
+
+        return 1;
+    }
+
+    return 0;
+}
+
+static uint8_t recv_char(uint8_t *symb)
+{
+    uint8_t result = 0;
+
+    if((rs232_or_usb != 1) && recv_char_uart(symb))
+    {
+        if(rs232_or_usb == -1)
+            rs232_or_usb = 0; // rs232
+        result = 1;
+    }
+    else if((rs232_or_usb != 0) && recv_char_usb(symb))
+    {
+        if(rs232_or_usb == -1)
+            rs232_or_usb = 1; // usb
+        result = 1;
+    }
+
+    return result;
+}
+
+void set_usb_byte(uint8_t byte)
+{
+    uint16_t usb_addr = 0x7FFF & usb_recv_addr_end;
+
+    usb_recv_buffer[usb_addr] = byte;
+    usb_addr ++;
+    if (usb_addr == USB_RECV_BUFFER_LEN)
+        usb_recv_addr_end = (~usb_recv_addr_end) & 0x8000;
+    else
+        usb_recv_addr_end++;
+
+    usb_need_receive = 1;
+}
+
+static void move_usb_buffer(void)
+{
+    uint16_t usb_delay_size;
+
+    if(usb_send_addr_start)
+    {
+        usb_delay_size = usb_send_addr_end - usb_send_addr_start;
+
+        if(usb_delay_size)
+        {
+            // move new data to begin
+            __builtin_memmove(usb_send_buffer, &usb_send_buffer[usb_send_addr_start], usb_delay_size);
+            usb_send_addr_start = 0;
+            usb_send_addr_end = usb_delay_size;
+        }
+        else
+        {
+            usb_send_addr_end = usb_send_addr_start = 0;
+        }
+    }
+}
+
+static void check_and_send_usb(void)
+{
+    if(usb_send_addr_end - usb_send_addr_start)
+    {
+        if(((USBD_CDC_HandleTypeDef*)USBD_Device.pClassData)->TxState == 0)
+        {
+            move_usb_buffer();
+            USBD_CDC_SetTxBuffer(&USBD_Device, &usb_send_buffer[usb_send_addr_start], usb_send_addr_end - usb_send_addr_start);
+            if(USBD_CDC_TransmitPacket(&USBD_Device) == USBD_OK)
+            {
+                usb_send_addr_start = usb_send_addr_end;
+            }
+        }
+    }
+}
+
 /* function of sending data */
-static uint8_t send_data(uint8_t *buffer, uint8_t size)
+static uint8_t send_data_uart(const uint8_t *buffer, uint8_t size)
 {
     uint8_t count, addr, buf;
     uint8_t change_addr = 0;
@@ -282,7 +388,39 @@ static uint8_t send_data(uint8_t *buffer, uint8_t size)
         send_running = 1;
         SET_BIT(uartHandle.Instance->CR1, USART_CR1_TXEIE); /* If interrupt disabled, enable UART interrupt. */
     }
-    return 1;
+
+    return 1; // send complete
+}
+
+static uint8_t send_data_usb(const uint8_t *buffer, uint8_t size)
+{
+    if(((USBD_CDC_HandleTypeDef*)USBD_Device.pClassData)->TxState == 0)
+        move_usb_buffer();
+    if(usb_send_addr_end + size < USB_SEND_BUFFER_LEN)
+    {
+        while(size)
+        {
+            usb_send_buffer[usb_send_addr_end] = *buffer;
+            usb_send_addr_end++;
+            size--;
+            buffer++;
+        }
+    }
+    check_and_send_usb();
+
+    return (size) ? 0 : 1;
+}
+
+static uint8_t send_data(const uint8_t *buffer, uint8_t size)
+{
+    if(rs232_or_usb <= 0)
+    {
+        return send_data_uart(buffer, size);
+    }
+    else // usb implementation
+    {
+        return send_data_usb(buffer, size);
+    }
 }
 
 /* Set delay in miliseconds */
@@ -572,7 +710,7 @@ static void exec_command(uint8_t command)
                 command = '1';
             else
                 command = '0';
-            send_data(&command, 1);
+            while(!send_data(&command, 1));
             break;
         case DEV_INT_PROCESS_COMMAND:
             switch(jtag_port_data & 0x70)
@@ -597,7 +735,8 @@ static void exec_command(uint8_t command)
 
 int main(void)
 {
-   uint32_t start_tick = 0;
+   uint32_t led_tick = 0;
+   
   /* This sample code shows how to use GPIO HAL API to toggle LED4 and LED5 IOs
     in an infinite loop. */
 
@@ -674,53 +813,64 @@ int main(void)
 
   if(HAL_UART_Confugure(&uartHandle) == HAL_OK)
   {
-    /* -3- Toggle IO in an infinite loop */
-    while (1)
+    if(USBD_Init(&USBD_Device, &VCP_Desc, 0) == USBD_OK)
     {
-        uint8_t byte, command;
-
-        if(recv_char(&byte))
+        if(USBD_RegisterClass(&USBD_Device, USBD_CDC_CLASS) == USBD_OK)
         {
-            if(in_jtag_state)
+            if(USBD_CDC_RegisterInterface(&USBD_Device, &USBD_CDC_fops) == USBD_OK)
             {
-                if(jtag_port_wait_integer)
+                USBD_Start(&USBD_Device);
+
+                while (1)
                 {
-                    jtag_port_integer <<= 8;
-                    jtag_port_integer |= byte;
-                    jtag_port_wait_integer --;
-                    if(jtag_port_wait_integer == 0)
-                        command = DEV_INT_PROCESS_COMMAND;
-                    else
-                        command = 0;
-                }
-                else
-                {
-                    command = get_short_command(byte);
-                    if(command == 0)
-                        command = get_command(byte);
+                    uint8_t byte, command;
+
+                    if(recv_char(&byte))
+                    {
+                        if(in_jtag_state)
+                        {
+                            if(jtag_port_wait_integer)
+                            {
+                                jtag_port_integer <<= 8;
+                                jtag_port_integer |= byte;
+                                jtag_port_wait_integer --;
+                                if(jtag_port_wait_integer == 0)
+                                    command = DEV_INT_PROCESS_COMMAND;
+                                else
+                                    command = 0;
+                            }
+                            else
+                            {
+                                command = get_short_command(byte);
+                                if(command == 0)
+                                    command = get_command(byte);
+                            }
+                        }
+                        else
+                            command = get_command(byte);
+
+                        if(command)
+                            exec_command(command);
+                        set_delay(100);
+                    }
+
+                    if (!time_delay)
+                    {
+                        reset_check_command();
+                        set_delay(5000);
+                    }
+
+                    if((HAL_GetTick() - led_tick) >= 500)
+                    {
+                        HAL_GPIO_TogglePin(LED5_GPIO_PORT, LED5_PIN);
+                        led_tick = HAL_GetTick();
+                    }
+
+                    check_and_send_usb();
+
+                    __WFI(); // enter to sleep mode
                 }
             }
-            else
-                command = get_command(byte);
-
-            if(command)
-                exec_command(command);
-            set_delay(100);
-        }
-        else
-        {
-            __asm__("wfi"); // enter to sleep mode
-        }
-
-        if (!time_delay)
-        {
-            reset_check_command();
-            set_delay(5000);
-        }
-        if((HAL_GetTick() - start_tick) >= 500)
-        {
-            HAL_GPIO_TogglePin(LED5_GPIO_PORT, LED5_PIN);
-            start_tick = HAL_GetTick();
         }
     }
     HAL_UART_DeInit(&uartHandle);
@@ -732,14 +882,20 @@ int main(void)
 /**
   * @brief  System Clock Configuration
   *         The system Clock is configured as follows :
-  *            System Clock source            = MSI
-  *            SYSCLK(Hz)                     = 4000000
-  *            HCLK(Hz)                       = 4000000
+  *            System Clock source            = PLL (MSI)
+  *            SYSCLK(Hz)                     = 80000000
+  *            HCLK(Hz)                       = 80000000
   *            AHB Prescaler                  = 1
   *            APB1 Prescaler                 = 1
-  *            APB2 Prescaler                 = 1
-  *            MSI Frequency(Hz)              = 4000000
-  *            Flash Latency(WS)              = 0
+  *            APB2 Prescaler                 = 2
+  *            MSI Frequency(Hz)              = 4800000
+  *            LSE Frequency(Hz)              = 32768
+  *            PLL_M                          = 6
+  *            PLL_N                          = 40
+  *            PLL_P                          = 7
+  *            PLL_Q                          = 4
+  *            PLL_R                          = 4
+  *            Flash Latency(WS)              = 4
   * @param  None
   * @retval None
   */
@@ -747,31 +903,51 @@ void SystemClock_Config(void)
 {
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = {0};
 
-  /* The following clock configuration sets the Clock configuration sets after System reset                */
-  /* It could be avoided but it is kept to illustrate the use of HAL_RCC_OscConfig and HAL_RCC_ClockConfig */
-  /* and to be eventually adapted to new clock configuration                                               */
+  /* Enable the LSE Oscilator 32.768 kHz */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_OFF;
+  HAL_RCC_OscConfig(&RCC_OscInitStruct);
 
-  /* MSI is enabled after System reset at 4Mhz, PLL not used */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_MSI;
-  RCC_OscInitStruct.MSIState = RCC_MSI_ON;
-  RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
+  /* Disable the CSS interrupt in case LSE signal is corrupted or not present */
+  HAL_RCCEx_DisableLSECSS();
+
+  /* Enable MSI Oscillator and activate PLL with MSI as source */
+  RCC_OscInitStruct.OscillatorType      = RCC_OSCILLATORTYPE_MSI;
+  RCC_OscInitStruct.MSIState            = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = RCC_MSICALIBRATION_DEFAULT;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
-  if(HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  RCC_OscInitStruct.MSIClockRange       = RCC_MSIRANGE_11;
+  RCC_OscInitStruct.PLL.PLLState        = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource       = RCC_PLLSOURCE_MSI;
+  RCC_OscInitStruct.PLL.PLLM            = 6;
+  RCC_OscInitStruct.PLL.PLLN            = 40;
+  RCC_OscInitStruct.PLL.PLLP            = 7;
+  RCC_OscInitStruct.PLL.PLLQ            = 4;
+  RCC_OscInitStruct.PLL.PLLR            = 4;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     /* Initialization Error */
     while(1);
   }
 
-  /* Select MSI as system clock source and configure the HCLK, PCLK1 and PCLK2 clocks dividers */
-  /* Set 0 Wait State flash latency for 4Mhz */
+  /* Enable MSI Auto-calibration through LSE */
+  HAL_RCCEx_EnableMSIPLLMode();
+
+  /* Select MSI output as USB clock source */
+  PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_USB;
+  PeriphClkInitStruct.UsbClockSelection = RCC_USBCLKSOURCE_MSI;
+  HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct);
+
+  /* Select PLL as system clock source and configure the HCLK, PCLK1 and PCLK2 
+  clocks dividers */
   RCC_ClkInitStruct.ClockType = (RCC_CLOCKTYPE_SYSCLK | RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2);
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
-  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-  if(HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
   {
     /* Initialization Error */
     while(1);
@@ -783,6 +959,9 @@ void SystemClock_Config(void)
 
   /* Enable Power Control clock */
   __HAL_RCC_PWR_CLK_ENABLE();
+
+  /* enable USB power on Pwrctrl CR2 register */
+  HAL_PWREx_EnableVddUSB();
 
   if(HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE2) != HAL_OK)
   {

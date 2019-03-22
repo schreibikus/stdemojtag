@@ -1,8 +1,8 @@
 /**
   ******************************************************************************
-  * @file    stm32l4xx_hal_flash_ramfunc.h
+  * @file    stm32l4xx_hal_pcd_ex.h
   * @author  MCD Application Team
-  * @brief   Header file of FLASH RAMFUNC driver.
+  * @brief   Header file of PCD HAL Extension module.
   ******************************************************************************
   * @attention
   *
@@ -34,43 +34,54 @@
   */
 
 /* Define to prevent recursive inclusion -------------------------------------*/
-#ifndef __STM32L4xx_FLASH_RAMFUNC_H
-#define __STM32L4xx_FLASH_RAMFUNC_H
+#ifndef __STM32L4xx_HAL_PCD_EX_H
+#define __STM32L4xx_HAL_PCD_EX_H
 
 #ifdef __cplusplus
- extern "C" {
+extern "C" {
 #endif
 
 /* Includes ------------------------------------------------------------------*/
 #include "stm32l4xx_hal_def.h"
 
+#if defined (USB) || defined (USB_OTG_FS) || defined (USB_OTG_HS)
+
 /** @addtogroup STM32L4xx_HAL_Driver
   * @{
   */
 
-/** @addtogroup FLASH_RAMFUNC
+/** @addtogroup PCDEx
   * @{
   */
-
 /* Exported types ------------------------------------------------------------*/
-/* Exported macro ------------------------------------------------------------*/
+/* Exported constants --------------------------------------------------------*/
+/* Exported macros -----------------------------------------------------------*/
 /* Exported functions --------------------------------------------------------*/
-/** @addtogroup FLASH_RAMFUNC_Exported_Functions
+/** @addtogroup PCDEx_Exported_Functions PCDEx Exported Functions
+  * @{
+  */
+/** @addtogroup PCDEx_Exported_Functions_Group1 Peripheral Control functions
   * @{
   */
 
-/** @addtogroup FLASH_RAMFUNC_Exported_Functions_Group1
-  * @{
-  */
-/* Peripheral Control functions  ************************************************/
-__RAM_FUNC  HAL_FLASHEx_EnableRunPowerDown(void);
-__RAM_FUNC  HAL_FLASHEx_DisableRunPowerDown(void);
-#if defined (STM32L4R5xx) || defined (STM32L4R7xx) || defined (STM32L4R9xx) || defined (STM32L4S5xx) || defined (STM32L4S7xx) || defined (STM32L4S9xx)
-__RAM_FUNC  HAL_FLASHEx_OB_DBankConfig(uint32_t DBankConfig);
-#endif
-/**
-  * @}
-  */
+#if defined (USB_OTG_FS) || defined (USB_OTG_HS)
+HAL_StatusTypeDef HAL_PCDEx_SetTxFiFo(PCD_HandleTypeDef *hpcd, uint8_t fifo, uint16_t size);
+HAL_StatusTypeDef HAL_PCDEx_SetRxFiFo(PCD_HandleTypeDef *hpcd, uint16_t size);
+#endif /* USB_OTG_FS || USB_OTG_HS */
+
+#if defined (USB)
+HAL_StatusTypeDef  HAL_PCDEx_PMAConfig(PCD_HandleTypeDef *hpcd,
+                                       uint16_t ep_addr,
+                                       uint16_t ep_kind,
+                                       uint32_t pmaadress);
+#endif /* USB */
+HAL_StatusTypeDef HAL_PCDEx_ActivateLPM(PCD_HandleTypeDef *hpcd);
+HAL_StatusTypeDef HAL_PCDEx_DeActivateLPM(PCD_HandleTypeDef *hpcd);
+HAL_StatusTypeDef HAL_PCDEx_ActivateBCD(PCD_HandleTypeDef *hpcd);
+HAL_StatusTypeDef HAL_PCDEx_DeActivateBCD(PCD_HandleTypeDef *hpcd);
+void HAL_PCDEx_BCD_VBUSDetect(PCD_HandleTypeDef *hpcd);
+void HAL_PCDEx_LPM_Callback(PCD_HandleTypeDef *hpcd, PCD_LPM_MsgTypeDef msg);
+void HAL_PCDEx_BCD_Callback(PCD_HandleTypeDef *hpcd, PCD_BCD_MsgTypeDef msg);
 
 /**
   * @}
@@ -83,11 +94,18 @@ __RAM_FUNC  HAL_FLASHEx_OB_DBankConfig(uint32_t DBankConfig);
 /**
   * @}
   */
+
+/**
+  * @}
+  */
+
+#endif /* defined (USB) || defined (USB_OTG_FS) || defined (USB_OTG_HS) */
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* __STM32L4xx_FLASH_RAMFUNC_H */
+
+#endif /* __STM32L4xx_HAL_PCD_EX_H */
 
 /************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/
