@@ -673,12 +673,15 @@ static int stdemo_scan(bool ir_scan, enum scan_type type, uint8_t *buffer,
 
 		for(writed = 0, readed = 0; writed < sendbytes; )
 		{
-			if(!stdemo_raw_write(&buffer[writed], 1))
+			int min_write = sendbytes - writed;
+			if(min_write > 64)
+				min_write = 64;
+			if(!stdemo_raw_write(&buffer[writed], min_write))
 			{
 				LOG_ERROR("%s %d: Failed write data in port\n", __FUNCTION__, __LINE__);
 				return ERROR_FAIL;
 			}
-			writed++;
+			writed += min_write;
 			if((type != SCAN_OUT) && (readed < writed))
 			{
 				int status = stdemo_raw_passive_read(&buffer[readed], writed - readed);
@@ -862,8 +865,7 @@ static const struct command_registration stdemo_command_handlers[] = {
 		.name = "stdemo_port",
 		.handler = stdemo_handle_stdemo_port_command,
 		.mode = COMMAND_CONFIG,
-		.help = "Display the address of the I/O port (e.g. 0x378) "
-			"or the number of the '/dev/stdemo' device used.  "
+		.help = "Display the port or the number of the '/dev/ttyACM0' device used.  "
 			"If a parameter is provided, first change that port.",
 		.usage = "[port_number]",
 	},
